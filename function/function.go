@@ -473,9 +473,13 @@ func (f *Function) CreateOrUpdateAlias(alias, version string) error {
 // GetAliases fetches a list of aliases for the function.
 func (f *Function) GetAliases() (*lambda.ListAliasesOutput, error) {
 	f.Log.Debug("fetching aliases")
-	return f.Service.ListAliases(&lambda.ListAliasesInput{
-		FunctionName: &f.FunctionName,
-	})
+	aliases, err := f.aliases()
+	if err != nil {
+		return nil, err
+	}
+	return &lambda.ListAliasesOutput{
+		Aliases: aliases,
+	}, nil
 }
 
 // Invoke the remote Lambda function, returning the response and logs, if any.
@@ -722,6 +726,32 @@ func (f *Function) cleanup() error {
 	return f.removeVersions(versionsToCleanup)
 }
 
+// aliases returns list of all aliases deployed to AWS Lambda
+func (f *Function) aliases() ([]*lambda.AliasConfiguration, error) {
+	var list []*lambda.AliasConfiguration
+	request := lambda.ListAliasesInput{
+		FunctionName: &f.FunctionName,
+	}
+
+	for {
+		page, err := f.Service.ListAliases(&request)
+
+		if err != nil {
+			return nil, err
+		}
+
+		list = append(list, page.Aliases...)
+
+		if page.NextMarker == nil {
+			break
+		}
+
+		request.Marker = page.NextMarker
+	}
+
+	return list, nil
+}
+
 // versions returns list of all versions deployed to AWS Lambda
 func (f *Function) versions() ([]*lambda.FunctionConfiguration, error) {
 	var list []*lambda.FunctionConfiguration
@@ -756,12 +786,29 @@ func (f *Function) versionsToCleanup() ([]*lambda.FunctionConfiguration, error) 
 		return nil, err
 	}
 
-	if *f.RetainedVersions == 0 {
-		return versions, nil
+	aliases, err := f.aliases()
+	if err != nil {
+		return nil, err
 	}
 
-	if len(versions) > *f.RetainedVersions {
-		return versions[:len(versions)-*f.RetainedVersions], nil
+	versionsWithAliases := make(map[string]bool)
+	for _, alias := range aliases {
+		versionsWithAliases[*alias.FunctionVersion] = true
+	}
+
+	var toCleanup []*lambda.FunctionConfiguration
+	for _, fnConfig := range versions {
+		if !versionsWithAliases[*fnConfig.Version] {
+			toCleanup = append(toCleanup, fnConfig)
+		}
+	}
+
+	if *f.RetainedVersions == 0 {
+		return toCleanup, nil
+	}
+
+	if len(toCleanup) > *f.RetainedVersions {
+		return toCleanup[:len(toCleanup)-*f.RetainedVersions], nil
 	}
 
 	return nil, nil

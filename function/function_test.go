@@ -110,7 +110,7 @@ func TestFunction_Delete_failed(t *testing.T) {
 	assert.EqualError(t, err, "API err")
 }
 
-func TestFunction_DeployCode_Success(t *testing.T) {
+func TestFunction_DeployCode_Success_Cleanup(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 	serviceMock := mock_lambdaiface.NewMockLambdaAPI(mockCtrl)
@@ -125,6 +125,10 @@ func TestFunction_DeployCode_Success(t *testing.T) {
 	updatedVersion := "1"
 	fnAlias := "current"
 	retainedVersions := 1
+
+	versionToDelete := "oldVersion"
+	versionToDeleteWithAlias := "oldVersionWithAlias"
+	currentVersion := "currentVersion"
 
 	serviceMock.EXPECT().UpdateFunctionCode(&lambda.UpdateFunctionCodeInput{
 		FunctionName: &fnName,
@@ -142,9 +146,36 @@ func TestFunction_DeployCode_Success(t *testing.T) {
 		FunctionName: &fnName,
 	}).Return(&lambda.ListVersionsByFunctionOutput{
 		Versions: []*lambda.FunctionConfiguration{
-			&lambda.FunctionConfiguration{},
+			nil, // $LATEST
+			&lambda.FunctionConfiguration{Version: &versionToDelete},
+			&lambda.FunctionConfiguration{Version: &versionToDeleteWithAlias},
+			&lambda.FunctionConfiguration{Version: &currentVersion},
 		},
 	}, nil)
+
+	serviceMock.EXPECT().ListAliases(&lambda.ListAliasesInput{
+		FunctionName: &fnName,
+	}).Return(&lambda.ListAliasesOutput{
+		Aliases: []*lambda.AliasConfiguration{
+			{
+				FunctionVersion: &versionToDeleteWithAlias,
+			},
+		},
+	}, nil)
+
+	serviceMock.EXPECT().DeleteFunction(&lambda.DeleteFunctionInput{
+		FunctionName: &fnName,
+		Qualifier:    &versionToDelete,
+	}).Return(nil, nil)
+	serviceMock.EXPECT().DeleteFunction(&lambda.DeleteFunctionInput{
+		FunctionName: &fnName,
+		Qualifier:    &versionToDeleteWithAlias,
+	}).Return(
+		nil,
+		awserr.New(
+			"ResourceConflictException",
+			"Unable to delete version because the following aliases reference it: [some-alias]",
+			nil)).AnyTimes()
 
 	fn := &function.Function{
 		FunctionName: fnName,
